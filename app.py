@@ -282,6 +282,7 @@ def get_session():
         st.session_state.default_candidates_loaded = False
         st.session_state.read_urls = set()
         st.session_state.pending_action = None
+        st.session_state.topic_error = None
         st.session_state.pending_chat_message = None
     return st.session_state.session
 
@@ -382,13 +383,18 @@ _DEFAULT_TOPIC = "인공지능"
 
 
 def _run_search(topic: str) -> None:
+    """가드레일 통과 여부와 무관하게 항상 호출부에서 st.rerun() 이 뒤따르므로,
+    차단 메시지는 st.error() 로 즉시 찍지 않고 session_state 에 남겨 rerun 이후에도
+    보이게 한다 (예전엔 st.error() 직후 st.rerun() 이 그 프레임을 그대로 날려버려서
+    가드레일에 걸려도 아무 메시지도 안 뜨는 버그가 있었음)."""
     guard = session.request_topic(topic)
     if not guard.allowed:
-        st.error(session.block_message(guard))
+        st.session_state.topic_error = session.block_message(guard)
         return
     resolved_topic = guard.extracted_topic or topic
     with st.spinner("주제에 맞는 기사를 찾는 중..."):
         candidates = session.recommend_articles(resolved_topic)
+    st.session_state.topic_error = None
     st.session_state.candidates = list(candidates.articles)
     st.session_state.study_material = None
 
@@ -442,6 +448,9 @@ def render_topic_and_candidates() -> None:
         else:
             _run_search(topic_input.strip())
         st.rerun()
+
+    if st.session_state.topic_error:
+        st.error(st.session_state.topic_error)
 
     if st.session_state.candidates:
         st.markdown('<div class="label" style="margin:14px 0 8px;">추천 기사</div>', unsafe_allow_html=True)
