@@ -281,6 +281,7 @@ def get_session():
         st.session_state.onboarded = False
         st.session_state.default_candidates_loaded = False
         st.session_state.read_urls = set()
+        st.session_state.quizzed_urls = set()
         st.session_state.pending_action = None
         st.session_state.topic_error = None
         st.session_state.pending_chat_message = None
@@ -399,6 +400,17 @@ def _run_search(topic: str) -> None:
     st.session_state.study_material = None
 
 
+def _needs_quiz_gate() -> bool:
+    """현재 읽고 있는 기사가 있고, 그 기사에 대해 이번 세션에 아직 퀴즈를
+    완료하지 않았다면 True — 다른 기사/주제로 넘어가기 전에 퀴즈를 강제한다.
+    한 기사당 세션 중 한 번만 강제되고, 이후엔 자유롭게 이동할 수 있다.
+    """
+    article = session.current_article
+    if article is None:
+        return False
+    return article["url"] not in st.session_state.quizzed_urls
+
+
 def _select_article(art) -> None:
     session.select_article(art)
     with st.spinner("학습자료를 만드는 중..."):
@@ -441,8 +453,9 @@ def render_topic_and_candidates() -> None:
         search_clicked = st.button("기사 찾기", use_container_width=True, type="primary")
 
     if search_clicked and topic_input.strip():
-        if session.current_article is not None:
-            # 기사를 읽던 중 다른 주제를 검색하면, 퀴즈를 먼저 풀어야 넘어갈 수 있다.
+        if _needs_quiz_gate():
+            # 기사를 읽던 중 다른 주제를 검색하면, 퀴즈를 먼저 풀어야 넘어갈 수 있다
+            # (단, 이 기사에 대해 이미 퀴즈를 완료했다면 자유롭게 검색 가능).
             st.session_state.pending_action = {"type": "search", "topic": topic_input.strip()}
             st.session_state.show_quiz = True
         else:
@@ -485,8 +498,8 @@ def render_topic_and_candidates() -> None:
                 else:
                     btn_label = "읽기"
                 if st.button(btn_label, key=f"pick-{art.url}", use_container_width=True, disabled=is_selected):
-                    if session.current_article is not None:
-                        # 다른 기사를 읽던 중이면, 퀴즈를 먼저 풀어야 넘어갈 수 있다.
+                    if _needs_quiz_gate():
+                        # 다른 기사로 넘어가려는데 지금 기사 퀴즈를 아직 안 풀었다면 강제한다.
                         st.session_state.pending_action = {"type": "article", "url": art.url}
                         st.session_state.show_quiz = True
                     else:
@@ -693,6 +706,10 @@ def render_quiz_screen() -> None:
             result, recommendation = session.grade(answers)
             st.session_state.quiz_result = result
             st.session_state.level_recommendation = recommendation
+            if session.current_article is not None:
+                # 이 기사는 이번 세션에 퀴즈를 완료했으니, 이후엔 자유롭게 다른
+                # 기사/주제로 넘어갈 수 있다 (한 기사당 세션 중 한 번만 강제).
+                st.session_state.quizzed_urls.add(session.current_article["url"])
             st.rerun()
         return
 
@@ -704,8 +721,8 @@ def render_quiz_screen() -> None:
         <div class="score-card">
           <div class="score-number">{result.correct}/{result.total}</div>
           <div>
-            <div class="score-label">채점 완료</div>
-            <div class="score-sub">정답률 {result.accuracy:.0%} — 아래에서 문항별 결과를 확인하세요.</div>
+            <div class="score-label">✅ 이 기사 학습 완료!</div>
+            <div class="score-sub">정답률 {result.accuracy:.0%} — 이제 다른 기사나 주제로 자유롭게 이동할 수 있어요.</div>
           </div>
         </div>
         """,
@@ -744,6 +761,13 @@ def render_quiz_screen() -> None:
     )
 
     continue_label = "다음 기사로 계속하기 →" if forced else "← 학습으로 돌아가기"
+
+    if st.button("🏠 홈으로 — 자유롭게 다른 기사 찾기", key="quiz-go-home", use_container_width=True):
+        # 큐에 쌓인 pending_action(특정 기사/검색으로 전환)은 버리고, 그냥 추천 기사
+        # 목록 화면으로 돌아간다 — 이 기사는 이미 퀴즈를 완료했으니 다시 뜨지 않는다.
+        st.session_state.pending_action = None
+        _apply_pending_action()
+        st.rerun()
 
     interrupt = st.session_state.level_interrupt
     if interrupt is not None:
