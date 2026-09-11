@@ -283,6 +283,7 @@ def get_session():
         st.session_state.read_urls = set()
         st.session_state.quizzed_urls = set()
         st.session_state.pending_action = None
+        st.session_state.topic_error = None
         st.session_state.pending_chat_message = None
     return st.session_state.session
 
@@ -383,13 +384,18 @@ _DEFAULT_TOPIC = "인공지능"
 
 
 def _run_search(topic: str) -> None:
+    """가드레일 통과 여부와 무관하게 항상 호출부에서 st.rerun() 이 뒤따르므로,
+    차단 메시지는 st.error() 로 즉시 찍지 않고 session_state 에 남겨 rerun 이후에도
+    보이게 한다 (예전엔 st.error() 직후 st.rerun() 이 그 프레임을 그대로 날려버려서
+    가드레일에 걸려도 아무 메시지도 안 뜨는 버그가 있었음)."""
     guard = session.request_topic(topic)
     if not guard.allowed:
-        st.error(session.block_message(guard))
+        st.session_state.topic_error = session.block_message(guard)
         return
     resolved_topic = guard.extracted_topic or topic
     with st.spinner("주제에 맞는 기사를 찾는 중..."):
         candidates = session.recommend_articles(resolved_topic)
+    st.session_state.topic_error = None
     st.session_state.candidates = list(candidates.articles)
     st.session_state.study_material = None
 
@@ -455,6 +461,9 @@ def render_topic_and_candidates() -> None:
         else:
             _run_search(topic_input.strip())
         st.rerun()
+
+    if st.session_state.topic_error:
+        st.error(st.session_state.topic_error)
 
     if st.session_state.candidates:
         st.markdown('<div class="label" style="margin:14px 0 8px;">추천 기사</div>', unsafe_allow_html=True)
@@ -562,6 +571,10 @@ def render_chat() -> None:
                     unsafe_allow_html=True,
                 )
 
+        # 스크롤 스크립트는 srcdoc 이 바뀔 때만 다시 실행된다. 내용이 매번 같으면
+        # Streamlit 이 iframe 을 재마운트하지 않아 최초 1회만 돌고 끝난다.
+        # 대화가 늘어날 때마다 값이 바뀌는 토큰을 넣어 강제로 다시 마운트시킨다.
+        _scroll_token = f"{len(session.chat_log)}-{1 if pending_msg is not None else 0}"
         components.html(
             """
             <script>
@@ -577,11 +590,18 @@ def render_chat() -> None:
                 }
                 return null;
               }
-              const target = findScrollable(root) || root;
-              target.scrollTop = target.scrollHeight;
+              // 말풍선 레이아웃이 끝나야 scrollHeight 가 확정되므로,
+              // 몇 프레임에 걸쳐 반복해서 바닥에 붙인다.
+              let tries = 0;
+              (function stick(){
+                const target = findScrollable(root) || root;
+                target.scrollTop = target.scrollHeight;
+                if (++tries < 15) requestAnimationFrame(stick);
+              })();
             })();
             </script>
-            """,
+            <!-- scroll-token: TOKEN -->
+            """.replace("TOKEN", _scroll_token),
             height=0,
         )
 
@@ -765,7 +785,7 @@ def render_quiz_screen() -> None:
     elif recommendation.is_change():
         c1, c2 = st.columns(2)
         if c1.button(f"{recommendation.suggested_level}(으)로 변경", type="primary"):
-            out = session.propose_level_change(recommendation)
+            out = session.request_level_change(recommendation.suggested_level)
             st.session_state.level_interrupt = out["interrupt"]
             st.rerun()
         if c2.button(f"현재 난이도 유지 · {continue_label}"):
