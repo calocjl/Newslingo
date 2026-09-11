@@ -742,6 +742,13 @@ def render_quiz_screen() -> None:
 
     continue_label = "다음 기사로 계속하기 →" if forced else "← 학습으로 돌아가기"
 
+    if st.button("🏠 홈으로 — 자유롭게 다른 기사 찾기", key="quiz-go-home", use_container_width=True):
+        # 큐에 쌓인 pending_action(특정 기사/검색으로 전환)은 버리고, 그냥 추천 기사
+        # 목록 화면으로 돌아간다 — 이 기사는 이미 퀴즈를 완료했으니 다시 뜨지 않는다.
+        st.session_state.pending_action = None
+        _apply_pending_action()
+        st.rerun()
+
     interrupt = st.session_state.level_interrupt
     if interrupt is not None:
         st.info(f"🔔 확인 필요: {interrupt}")
